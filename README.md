@@ -78,9 +78,9 @@ A lot of pre-filtering involves trimming down your dataset based on the values a
                                                 partition)
 
 ## Redshift Spectrum
-Dataframes published to S3 can optionally be queried in AWS Redshift Spectrum. To enable this functionality, you must have an external database configured in Redshift. See the [AWS docs](https://docs.aws.amazon.com/redshift/latest/dg/c-using-spectrum.html) for help setting up a database in Redshift. To enable this functionality in S3parq, simply pass a dictionary of configurations to `publish()` via the redshift_params argument.
+Dataframes published to S3 can optionally be queried in AWS Redshift Spectrum. To enable this functionality, you must have an external database configured in Redshift. See the [AWS docs](https://docs.aws.amazon.com/redshift/latest/dg/c-using-spectrum.html) for help setting up a database in Redshift. To enable this functionality in S3parq, simply pass a dictionary of configurations to `publish()` via the redshift_config argument.
 
-`redshift_params` is a dictionary which *must* contain the following keys: values (values are all strings unless noted otherwise):
+`redshift_config` is a dictionary which *must* contain the following keys: values (values are all strings unless noted otherwise):
 - schema_name: name of the schema to add table_name to
 - table_name: name of the table to create in Redshift
 - iam_role: ARN link to an IAM Role with read/write Spectrum permissions
@@ -90,7 +90,7 @@ Dataframes published to S3 can optionally be queried in AWS Redshift Spectrum. T
 - port: port to connect to Redshift (usually 5439)
 - db_name: name of the (existing) external database configured to use Redshift Spectrum
 
-If redshift_params is present but invalid, the entire `publish()` fails.
+If redshift_config is present but invalid, the entire `publish()` fails.
 
 *NOTE:* Spectrum schemas do _not_ work as normal database schemas. Tables are global to a Redshift Spectrum database, so each schema belonging to `db_name` can access all tables, regardless of the schema they are created with. Instead of schemas, different table registries require different Redshift Spectrum databases.
 

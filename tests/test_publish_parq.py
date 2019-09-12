@@ -39,8 +39,8 @@ class Test:
 
         return tuple(df.columns.keys()), df.dataframe
 
-    def setup_redshift_params(self):
-        redshift_params = {
+    def setup_redshift_config(self):
+        redshift_config = {
             'schema_name': 'hamburger_schema',
             'table_name': 'hamburger_table',
             'iam_role': 'hamburger_arn',
@@ -51,7 +51,7 @@ class Test:
             'db_name': 'hamburger_db'
         }
 
-        return redshift_params
+        return redshift_config
 
     def test_works_without_partitions(self):
         columns, dataframe = self.setup_df()
@@ -145,20 +145,20 @@ class Test:
         columns, dataframe = self.setup_df()
         bucket, key = self.setup_s3()
         partitions = [columns[0]]
-        redshift_params = self.setup_redshift_params()
+        redshift_config = self.setup_redshift_config()
         msh = mock_session_helper(
-            region = redshift_params['region'],
-            cluster_id = redshift_params['cluster_id'],
-            host = redshift_params['host'],
-            port = redshift_params['port'],
-            db_name = redshift_params['db_name']
+            region = redshift_config['region'],
+            cluster_id = redshift_config['cluster_id'],
+            host = redshift_config['host'],
+            port = redshift_config['port'],
+            db_name = redshift_config['db_name']
             )
             
         msh.configure_session_helper()
         parq.publish(bucket=bucket, key=key,
-                        dataframe=dataframe, partitions=partitions, redshift_params=redshift_params)
+                        dataframe=dataframe, partitions=partitions, redshift_config=redshift_config)
 
-        mock_create_schema.assert_called_once_with(redshift_params['schema_name'], redshift_params['db_name'], redshift_params['iam_role'], msh)
+        mock_create_schema.assert_called_once_with(redshift_config['schema_name'], redshift_config['db_name'], redshift_config['iam_role'], msh)
 
     @patch('s3parq.publish_spectrum.create_table')
     @patch('s3parq.publish_parq.SessionHelper')
@@ -166,23 +166,23 @@ class Test:
         columns, dataframe = self.setup_df()
         bucket, key = self.setup_s3()
         partitions = ["text_col", "int_col", "float_col"]
-        redshift_params = self.setup_redshift_params()
+        redshift_config = self.setup_redshift_config()
         msh = mock_session_helper(
-            region = redshift_params['region'],
-            cluster_id = redshift_params['cluster_id'],
-            host = redshift_params['host'],
-            port = redshift_params['port'],
-            db_name = redshift_params['db_name']
+            region = redshift_config['region'],
+            cluster_id = redshift_config['cluster_id'],
+            host = redshift_config['host'],
+            port = redshift_config['port'],
+            db_name = redshift_config['db_name']
             )
             
         msh.configure_session_helper()
         parq.publish(bucket=bucket, key=key,
-                        dataframe=dataframe, partitions=partitions, redshift_params=redshift_params)
+                        dataframe=dataframe, partitions=partitions, redshift_config=redshift_config)
         
         df_types = parq._get_dataframe_datatypes(dataframe, partitions)
         partition_types = parq._get_dataframe_datatypes(dataframe, partitions, True)
 
-        mock_create_table.assert_called_once_with(redshift_params['table_name'], redshift_params['schema_name'], df_types, partition_types, parq.s3_url(bucket, key), msh)
+        mock_create_table.assert_called_once_with(redshift_config['table_name'], redshift_config['schema_name'], df_types, partition_types, parq.s3_url(bucket, key), msh)
 
     def test_df_datatypes(self):
         columns, dataframe = self.setup_df()

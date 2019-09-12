@@ -4,7 +4,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from typing import List
 from s3parq.session_helper import SessionHelper
-from s3parq import publish_spectrum
+from s3parq import publish_spectrum, publish_redshift
 from sqlalchemy import Column, Integer, String
 
 logger = logging.getLogger(__name__)
@@ -44,20 +44,20 @@ def check_partitions(partitions: iter, dataframe: pd.DataFrame)->None:
             raise ValueError(partition_message)
     logger.debug("Done checking partitions.")
 
-def check_redshift_params(redshift_params: dict):
+def check_redshift_config(redshift_config: dict):
     expected_params = ["schema_name", "table_name", "iam_role", "region", "cluster_id", "host", "port", "db_name"]
     logger.debug("Checking redshift params are correctly formatted")
-    number_redshift_params = 8
-    if len(redshift_params) != number_redshift_params:
-        params_length_message = f"Expected parameters: {number_redshift_params}. Received: {len(redshift_params)}"
+    number_redshift_config = 8
+    if len(redshift_config) != number_redshift_config:
+        params_length_message = f"Expected parameters: {number_redshift_config}. Received: {len(redshift_config)}"
         raise ValueError(params_length_message)
-    for key, item in redshift_params.items():
+    for key, item in redshift_config.items():
         if not item:
             params_type_message = f"No value assigned for param {key}."
             raise ValueError(params_type_message)
     for param in expected_params:
-        if param not in redshift_params.keys():
-            params_key_message = f"Error: Required parameter {param} not found in passed redshift_params."
+        if param not in redshift_config.keys():
+            params_key_message = f"Error: Required parameter {param} not found in passed redshift_config."
             raise KeyError(params_key_message)
         
 
@@ -79,21 +79,26 @@ def _gen_parquet_to_s3(bucket: str, key: str, dataframe: pd.DataFrame,
                         partition_cols=partitions, filesystem=s3fs.S3FileSystem())
     logger.debug("Done writing to location.")
 
-
-def _assign_partition_meta(bucket: str, key: str, dataframe: pd.DataFrame, partitions: List['str'], session_helper: SessionHelper, redshift_params=None) -> List[str]:
-    """ assigns the dataset partition meta to all keys in the dataset"""
-    s3_client = boto3.client('s3')
-    all_files_without_meta = []
+def _get_parquet_keys(bucket: str, key: str) -> List['str']:
+   s3_client = boto3.client('s3')
+    keys = []
     paginator = s3_client.get_paginator('list_objects')
     page_iterator = paginator.paginate(Bucket=bucket, Prefix=key)
     for page in page_iterator:
         for obj in page['Contents']:
-            if obj['Key'].endswith(".parquet"):
-                head_obj = s3_client.head_object(Bucket=bucket, Key=obj['Key'])
-                if not 'partition_data_types' in head_obj['Metadata']:
-                    all_files_without_meta.append(obj['Key'])
-                    if redshift_params and partitions:
-                        sql_command = publish_spectrum.create_partitions(bucket, redshift_params['schema_name'], redshift_params['table_name'], obj['Key'], session_helper)
+            if obj['Key'].endswith(".parquet"): keys.append(obj['Key'])
+    return keys
+
+def _assign_partition_meta(bucket: str, key: str, dataframe: pd.DataFrame, partitions: List['str'], session_helper: SessionHelper, redshift_config=None) -> List[str]:
+    """ assigns the dataset partition meta to all keys in the dataset"""
+    s3_client = boto3.client('s3')
+    all_files_without_meta = []
+    for file in _get_parquet_keys(bucket, key):
+            head_obj = s3_client.head_object(Bucket=bucket, Key=file)
+            if not 'partition_data_types' in head_obj['Metadata']:
+                all_files_without_meta.append(file)
+            if redshift_config and partitions:
+                sql_command = publish_spectrum.create_partitions(bucket, redshift_config['schema_name'], redshift_config['table_name'], obj['Key'], session_helper)
 
     for obj in all_files_without_meta:
         logger.debug(f"Appending metadata to file {obj}..")
@@ -226,43 +231,71 @@ ideal size: {ideal_size} bytes
     logger.info(f"sized out {len(sized_frames)} dataframes.")
     return tuple(sized_frames)
 
+def _get_redshift_session_helper(redshift_config: dict) -> SessionHelper:
+    session_helper = SessionHelper(
+        region = redshift_config['region'],
+        cluster_id = redshift_config['cluster_id'],
+        host = redshift_config['host'],
+        port = redshift_config['port'],
+        db_name = redshift_config['db_name']
+    )
+    return session_helper.configure_session_helper()
 
-def publish(bucket: str, key: str, partitions: List['str'], dataframe: pd.DataFrame, redshift_params = None) -> None:
-    """Redshift Params:
-        ARGS: 
-            schema_name: str
-            table_name: str
-            iam_role: str
-            region: str
-            cluster_id: str
-            host: str 
-            port: str 
-            db_name: str
+def _write_to_redshift_spectrum(bucket: str, key: str, partitions: List['str'], dataframe: pd.DataFrame, redshift_config: dict):
     """
-    session_helper = None
+    Writes to Redshift Spectrum using some Redshift Params, a dict with keys/values:
+        schema_name: str
+        table_name: str
+        iam_role: str
+        region: str
+        cluster_id: str
+        host: str 
+        port: str 
+        db_name: str
+    Note that with Spectrum, data isn't copied to Redshift. AWS Glue just stores a symbolic link to the parquet in S3.
+    """
+    logger.debug("Redshift parameters valid. Opening Session helper.")
+    session_helper = _get_redshift_session_helper(redshift_config)
 
-    if redshift_params:
-        if "index" in dataframe.columns:
-            raise ValueError("'index' is a reserved keyword in Redshift. Please remove or rename your DataFrame's 'index' column.")
+    publish_spectrum.create_schema(redshift_config['schema_name'], redshift_config['db_name'], redshift_config['iam_role'], session_helper)
+    logger.debug(f"Schema {redshift_config['schema_name']} created. Creating table {redshift_config['table_name']}...")
 
-        logger.debug("Found redshift parameters. Checking validity of params...")
-        check_redshift_params(redshift_params)
-        logger.debug("Redshift parameters valid. Opening Session helper.")
-        session_helper = SessionHelper(
-            region = redshift_params['region'],
-            cluster_id = redshift_params['cluster_id'],
-            host = redshift_params['host'],
-            port = redshift_params['port'],
-            db_name = redshift_params['db_name']
-        )
-        session_helper.configure_session_helper()
-        publish_spectrum.create_schema(redshift_params['schema_name'], redshift_params['db_name'], redshift_params['iam_role'], session_helper)
-        logger.debug(f"Schema {redshift_params['schema_name']} created. Creating table {redshift_params['table_name']}...")
+    df_types = _get_dataframe_datatypes(dataframe, partitions)
+    partition_types = _get_dataframe_datatypes(dataframe, partitions, True)
+    publish_spectrum.create_table(redshift_config['table_name'], redshift_config['schema_name'], df_types, partition_types, s3_url(bucket, key), session_helper)
+    logger.debug(f"Table {redshift_config['table_name']} created.")
 
-        df_types = _get_dataframe_datatypes(dataframe, partitions)
-        partition_types = _get_dataframe_datatypes(dataframe, partitions, True)
-        publish_spectrum.create_table(redshift_params['table_name'], redshift_params['schema_name'], df_types, partition_types, s3_url(bucket, key), session_helper)
-        logger.debug(f"Table {redshift_params['table_name']} created.")
+    if not partitions: return
+
+    for file in _get_parquet_keys(bucket, key):
+        publish_spectrum.create_partitions(bucket, redshift_config['schema_name'], redshift_config['table_name'], file, session_helper)
+    return
+
+def _write_to_redshift(bucket: str, key: str, partitions: List['str'], dataframe: pd.DataFrame, redshift_config: dict): -> None
+    """
+    Writes to Redshift (NOT Spectrum) using some Redshift Params, a dict with keys/values:
+        schema_name: str
+        table_name: str
+        iam_role: str
+        region: str
+        cluster_id: str
+        host: str 
+        port: str 
+        db_name: str
+    """
+    logger.debug("Redshift parameters valid. Opening Session helper.")
+    session_helper = _get_redshift_session_helper(redshift_config)
+
+    publish_redshift.create_schema(redshift_config['schema_name'], redshift_config['db_name'], redshift_config['iam_role'], session_helper)
+    logger.debug(f"Schema {redshift_config['schema_name']} created. Creating table {redshift_config['table_name']}...")
+
+    df_types = _get_dataframe_datatypes(dataframe, partitions)
+    partition_types = _get_dataframe_datatypes(dataframe, partitions, True)
+    publish_redshift.create_table(redshift_config['table_name'], redshift_config['schema_name'], df_types, partition_types, s3_url(bucket, key), session_helper)
+    logger.debug(f"Table {redshift_config['table_name']} created.")
+    return
+
+def publish(bucket: str, key: str, partitions: List['str'], dataframe: pd.DataFrame, redshift_config=None, use_spectrum=True) -> None:
 
     logger.info("Checking params...")
     check_empty_dataframe(dataframe)
@@ -283,9 +316,20 @@ def publish(bucket: str, key: str, partitions: List['str'], dataframe: pd.DataFr
                                                  dataframe=frame,
                                                  partitions=partitions,
                                                  session_helper=session_helper, 
-                                                 redshift_params=redshift_params)
+                                                 redshift_config=redshift_config)
         files = files + published_files
 
     logger.debug("Done writing to S3.")
 
+    if redshift_config:
+        if "index" in dataframe.columns: raise ValueError("'index' is a reserved keyword in Redshift. Please remove or rename your DataFrame's 'index' column.")
+        logger.debug("Publishing to Redshift Spectrum. Checking validity of params...")
+        check_redshift_config(redshift_config)
+        if use_spectrum:
+            _write_to_redshift_spectrum(dataframe, redshift_config)
+            logger.debug("Done creating Redshift Spectrum table.")
+        else:
+            _write_to_redshift(dataframe, redshift_config)
+            logger.debug("Done copying parquet table in S3 to Redshift.")
+        
     return files
